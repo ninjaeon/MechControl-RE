@@ -1,4 +1,5 @@
 #include "controller.h"
+#include "config_text.h"
 #include <algorithm>
 
 namespace mech {
@@ -180,7 +181,13 @@ void Controller::apply_gpu(GpuSettings g) {
         nvidia_work([&] { nvidia_->budget(); });
         held(); // Qualify the live budget before EC writes, including a reduced Dynamic Boost-off budget.
     }
-    batch(gpu_plan(g));
+    auto writes = gpu_plan(g);
+    batch(writes);
+    std::string written = "[GPU Power] TGP " + std::to_string(g.tgp) + " W, Dynamic Boost " +
+                          (g.dynamic_boost_enabled ? std::to_string(g.dynamic_boost_watts) + " W" : "off") + ":";
+    for (const auto& w : writes)
+        written += " " + hex_text(w.address) + "=" + hex_text(w.value) + (w.mask != 255 ? "/" + hex_text(w.mask) : "");
+    diagnostic_(written);
     if (nvidia_busy_)
         throw std::runtime_error("NVIDIA operation in progress; EC minimum applied, driver verification pending");
     if (gpu_unlocked_ || gpu_driver_uncertain_) {
