@@ -109,6 +109,12 @@ Controller::Controller(EcSession& session, std::filesystem::path directory,
         if (!nvidia_available_)
             diagnostic_(device ? std::string("NVIDIA controls not offered: GPU 10DE:") + id + " is older than RTX 40"
                                : std::string("NVIDIA controls not offered: no NVIDIA GPU found"));
+        // The live table's read-only NVML readings need only the laptop's adapter, on any generation.
+        try {
+            nvml_adapter_ = nv::laptop_adapter();
+        } catch (const std::exception& e) {
+            nvml_error_ = std::string("No live NVIDIA readings: ") + e.what();
+        }
     }
     nvidia_ = std::move(driver);
     if (nvidia_) {

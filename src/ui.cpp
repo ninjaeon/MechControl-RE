@@ -1159,18 +1159,22 @@ private:
                 muted, ref(2));
         if (expanded) s.close();
         int liveTop = -1;
-        if (nvidia) {
+        // NVML's readings keep the table where the NVIDIA controls are not offered; the notes on the rails belong
+        // with those controls.
+        if (gpu && state_.value("liveOffered", nvidia)) {
             s.open(L"GPU Limits (live)");
             liveTop = s.y;
             s.y += 8 * (ref(6) + s.line);
             if (!liveReason_.empty()) note(L"-- (" + liveReason_ + L")", muted, ref(6));
-            // Measured on an RTX 5090 Laptop: current = rail power / a fixed voltage, so it reads high.
-            note(
-                L"NVVDD and MSVDD currents are calculated by the driver from rail power, not measured, and can read well above the real current. The limits use the same calculated values.",
-                muted, 0);
-            note(
-                L"When software shunt modding, tune the NVVDD, MSVDD and board input current limits so that they are all solid green 99% of the time, and not any higher.",
-                muted, ref(6));
+            if (nvidia) {
+                // Measured on an RTX 5090 Laptop: current = rail power / a fixed voltage, so it reads high.
+                note(
+                    L"NVVDD and MSVDD currents are calculated by the driver from rail power, not measured, and can read well above the real current. The limits use the same calculated values.",
+                    muted, 0);
+                note(
+                    L"When software shunt modding, tune the NVVDD, MSVDD and board input current limits so that they are all solid green 99% of the time, and not any higher.",
+                    muted, ref(6));
+            }
             s.close();
         }
         if (s.apply) {
@@ -1804,8 +1808,10 @@ private:
                              L" A";
         }
         auto liveNvidia = live_.is_object() ? live_.value("nvidia", Json(nullptr)) : Json(nullptr);
-        liveReason_ = !live_.is_object()       ? L"not read yet"
-                      : liveNvidia.is_string() ? w(liveNvidia.get<std::string>())
+        // NVML readings stand in for the driver's when no power controller is open.
+        liveReason_ = !live_.is_object()           ? L"not read yet"
+                      : live_.value("nvml", false) ? L""
+                      : liveNvidia.is_string()     ? w(liveNvidia.get<std::string>())
                       : live_.contains("telemetryError")
                           ? L"NVIDIA readback failed: " + w(live_["telemetryError"].get<std::string>())
                           : L"";
@@ -1818,6 +1824,7 @@ private:
         auto key = cpuNote_ + L'\n' + cpuPreset_ + L'\n' + powerHint_ + L'\n' + liveReason_ + L'\n' +
                    text(get(unlockId)) + L'\n' + bypassText_ + L'\n' + voltageText_ +
                    std::to_wstring(int(advanced_) + 4 * offered + 16 * tempTargetShown() +
+                                   32 * state_.value("liveOffered", offered) +
                                    8 * state_.value("advanced", Json::object())
                                            .value("voltageOffset", Json::object())
                                            .value("available", false) +

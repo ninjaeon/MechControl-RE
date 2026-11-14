@@ -227,4 +227,16 @@ struct ProfilePlan {
 ProfilePlan plan_profile(const config::GpuSettings&, bool automatic, bool extend, int normal_min, int normal_max,
                          int unlock_min, int unlock_max, bool unlocked, bool available, const std::optional<Currents>&,
                          const std::function<bool(bool, const config::GpuSettings&)>& needs_restart);
+// The laptop's NVIDIA adapter as Windows lists it: the only one, or the only "Laptop GPU" beside others such as an
+// eGPU. Throws why none can be chosen. Does not touch the GPU.
+struct Adapter {
+    std::wstring instance;
+    uint32_t bus = 0;
+};
+Adapter laptop_adapter();
+// NVML's public readings of the adapter on a PCI bus, for the live table while no Power is open. Read-only.
+struct Reading {
+    uint32_t power_mw = 0, enforced_mw = 0, clock_mhz = 0, max_clock_mhz = 0;
+};
+Reading read_nvml(uint32_t bus);
 }

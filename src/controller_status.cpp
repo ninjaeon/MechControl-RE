@@ -52,6 +52,8 @@ Json Controller::presentation(bool read, bool gpu_live, int page) {
         j["chargeLimitOffered"] = !session_.hardware.before_gpu_module();
         // The same for the NVIDIA unlock, DLPPC, current limits and driver readings on a GPU they cannot work on.
         j["nvidiaOffered"] = nvidia_offered_;
+        // The live table also shows NVML's readings of the laptop's adapter, which need no particular generation.
+        j["liveOffered"] = nvidia_offered_ || nvml_adapter_.has_value();
         for (std::string key : {"cpuTemp", "gpuTemp"})
             if (p.registers.contains(key)) j[key + "Register"] = p.reg(key);
         j["modes"] = Json::array();
@@ -117,6 +119,29 @@ static void live_fields(Json& g, const nv::Telemetry& t) {
     g["corePowerMw"] = maybe(t.core_mw);
     if (t.ipc) g["boardInputLimiterActivity"] = *t.ipc;
 }
+// Without a power controller, NVML's public readings fill the live table's GPU clock and power rows; the rail and
+// current rows need Power. A sleeping GPU is not woken.
+void Controller::nvml_live(Json& g) {
+    if (!nvml_adapter_) {
+        if (!nvml_error_.empty()) g["nvidia"] = nvml_error_;
+        return;
+    }
+    if (nv::Store::power_state(nvml_adapter_->instance) != 0) {
+        g["nvidia"] = "GPU asleep, not read";
+        return;
+    }
+    try {
+        nv::Reading r;
+        nvidia_work([&] { r = nv::read_nvml(nvml_adapter_->bus); });
+        g["clockMhz"] = r.clock_mhz;
+        g["maxClockMhz"] = r.max_clock_mhz;
+        g["gpuPowerMw"] = r.power_mw;
+        g["enforcedMw"] = r.enforced_mw;
+        g["nvml"] = true; // The live table shows these; "nvidia" keeps saying why the driver controls are absent.
+    } catch (const std::exception& e) {
+        g["telemetryError"] = e.what();
+    }
+}
 // The live refresh reads driver telemetry only, like the source: no EC, limit, budget or DLPPC reads.
 Json Controller::gpu_telemetry() {
     if (!features_.gpu_power()) return nullptr;
@@ -129,7 +154,10 @@ Json Controller::gpu_telemetry() {
         g["nvidia"] = nvidia_error_;
         return g;
     }
-    if (!nvidia_) return g;
+    if (!nvidia_) {
+        nvml_live(g);
+        return g;
+    }
     if (!nvidia_->awake()) {
         g["nvidia"] = "GPU asleep, not read";
         return g;
@@ -215,7 +243,10 @@ Json Controller::gpu_status(bool presentation) {
         g["nvidia"] = nvidia_error_;
         return g;
     }
-    if (!nvidia_) return g;
+    if (!nvidia_) {
+        nvml_live(g);
+        return g;
+    }
     if (!nvidia_->awake()) {
         g["nvidia"] = "GPU asleep, not read";
         return g;

@@ -114,6 +114,32 @@ int Store::adapter_power_state() {
     }
     return state;
 }
+Adapter laptop_adapter() {
+    struct Found {
+        Adapter adapter;
+        bool laptop = false;
+    };
+    std::vector<Found> all;
+    adapters([&](HDEVINFO set, SP_DEVINFO_DATA info, const std::wstring& hw) {
+        if (hw.size() < 13 || _wcsnicmp(hw.c_str(), L"PCI\\VEN_10DE&", 13) != 0) return false;
+        wchar_t name[512]{}, id[512]{};
+        DWORD bus = 0, size = 0;
+        if (!SetupDiGetDeviceRegistryPropertyW(set, &info, SPDRP_BUSNUMBER, nullptr, reinterpret_cast<BYTE*>(&bus), 4,
+                                               &size) ||
+            size != 4 || !SetupDiGetDeviceInstanceIdW(set, &info, id, 512, nullptr))
+            return false;
+        SetupDiGetDeviceRegistryPropertyW(set, &info, SPDRP_DEVICEDESC, nullptr, reinterpret_cast<BYTE*>(name),
+                                          sizeof(name) - sizeof(wchar_t), nullptr);
+        all.push_back({{id, bus}, std::wstring_view(name).find(L"Laptop GPU") != std::wstring_view::npos});
+        return false;
+    });
+    if (all.size() == 1) return all.front().adapter;
+    auto laptops = std::count_if(all.begin(), all.end(), [](auto& f) { return f.laptop; });
+    if (laptops == 1) return std::find_if(all.begin(), all.end(), [](auto& f) { return f.laptop; })->adapter;
+    throw std::runtime_error(all.empty() ? "No NVIDIA adapter is present"
+                                         : std::to_string(all.size()) +
+                                               " NVIDIA adapters and not exactly one Laptop GPU among them");
+}
 std::filesystem::path Store::recovery_path() {
     PWSTR p = nullptr;
     auto hr = SHGetKnownFolderPath(FOLDERID_ProgramData, 0, nullptr, &p);

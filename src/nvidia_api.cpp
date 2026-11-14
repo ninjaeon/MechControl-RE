@@ -794,4 +794,43 @@ config::Json Api::diagnostic() {
     });
     return j;
 }
+Reading read_nvml(uint32_t bus) {
+    static HMODULE nvml = LoadLibraryExW(L"nvml.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (!nvml) throw std::runtime_error("NVIDIA system library unavailable");
+    auto symbol = [](const char* name) {
+        auto p = GetProcAddress(nvml, name);
+        require(p != nullptr, "NVML symbol");
+        return p;
+    };
+    using Count = int(__cdecl*)(uint32_t*);
+    using Handle = int(__cdecl*)(uint32_t, void**);
+    using Info = int(__cdecl*)(void*, void*);
+    using Value = int(__cdecl*)(void*, uint32_t*);
+    using Clock = int(__cdecl*)(void*, uint32_t, uint32_t*);
+    // NVML handles do not survive a GPU reset, so each reading opens NVML afresh, as Api::Native::session does.
+    check(reinterpret_cast<int(__cdecl*)()>(symbol("nvmlInit_v2"))(), "NVML Init");
+    struct Shutdown {
+        FARPROC shutdown;
+        ~Shutdown() { reinterpret_cast<int(__cdecl*)()>(shutdown)(); }
+    } close{symbol("nvmlShutdown")};
+    uint32_t count = 0;
+    check(reinterpret_cast<Count>(symbol("nvmlDeviceGetCount_v2"))(&count), "NVML Count");
+    void* device = nullptr;
+    for (uint32_t i = 0; i < count && !device; ++i) {
+        void* candidate = nullptr;
+        Bytes pci(68); // nvmlPciInfo_t: the bus number sits at offset 20.
+        check(reinterpret_cast<Handle>(symbol("nvmlDeviceGetHandleByIndex_v2"))(i, &candidate), "NVML Handle");
+        check(reinterpret_cast<Info>(symbol("nvmlDeviceGetPciInfo_v3"))(candidate, pci.data()), "NVML PCI info");
+        if (u32(pci, 20) == bus) device = candidate;
+    }
+    if (!device) throw std::runtime_error("NVML lists no GPU on PCI bus " + std::to_string(bus));
+    Reading r;
+    check(reinterpret_cast<Value>(symbol("nvmlDeviceGetPowerUsage"))(device, &r.power_mw), "NVML power");
+    check(reinterpret_cast<Value>(symbol("nvmlDeviceGetEnforcedPowerLimit"))(device, &r.enforced_mw),
+          "NVML enforced power");
+    check(reinterpret_cast<Clock>(symbol("nvmlDeviceGetClockInfo"))(device, 0, &r.clock_mhz), "NVML graphics clock");
+    check(reinterpret_cast<Clock>(symbol("nvmlDeviceGetMaxClockInfo"))(device, 0, &r.max_clock_mhz),
+          "NVML maximum graphics clock");
+    return r;
+}
 }

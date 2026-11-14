@@ -307,6 +307,7 @@ private:
     nv::Power& open_nvidia();
     void nvidia_work(const std::function<void()>&);
     std::string nvidia_unavailable() const;
+    void nvml_live(config::Json&);
     nv::ProfilePlan plan_gpu(const config::GpuSettings&, bool automatic);
     std::vector<EcWrite> gpu_plan(const config::GpuSettings&);
     void configure_gpu(const nv::ProfilePlan&);
@@ -331,6 +332,10 @@ private:
     // DLPPC and the temperature target need only NVAPI; used while nvidia_ is unavailable (an older GPU or
     // unsupported BIOS limits).
     std::unique_ptr<nv::Api> api_;
+    // The adapter the live table's read-only NVML readings come from while no Power is open, or why none was chosen.
+    // Chosen at startup only with real NVIDIA hardware, so checks never read a real GPU.
+    std::optional<nv::Adapter> nvml_adapter_;
+    std::string nvml_error_;
     bool nvidia_available_ = false, nvidia_busy_ = false, dlppc_available_ = false, dlppc_disabled_ = false,
          on_ac_ = false;
     // The temperature target works on any NVIDIA GPU whose driver has a client thermal policy.
