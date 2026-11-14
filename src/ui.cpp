@@ -19,6 +19,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstring>
+#include <cwctype>
 #include <map>
 #include <set>
 #include <iomanip>
@@ -777,6 +778,8 @@ private:
             int id = zoneBaseId + zone * 16;
             check(4, id, L"Enabled");
             slider(4, id + 4, L"Brightness", 0, 100, 0);
+            combo(4, id + 8, {L"Static color"});
+            slider(4, id + 9, L"Speed", 1, 5, 3);
             rgb(4, id);
             button(4, id + 5, L"Apply", true);
             button(4, id + 7, L"Pick Color…");
@@ -1394,7 +1397,13 @@ private:
             s.y += ref(4);
             s.put(get(base), s.left, s.y, s.checkWidth(base, font_), s.box);
             s.y += s.box + ref(6);
-            s.slide(base + 4, s.columns({base + 4}, L"100 %"));
+            auto columns = s.columns({base + 4, base + 9}, L"100 %");
+            s.slide(base + 4, columns);
+            s.y += ref(6);
+            int effect = s.say(L"Effect:", s.left + s.pad, s.y + ref(6)) + ref(12);
+            s.put(get(base + 8), effect, s.y + ref(2), ref(170), ref(300));
+            s.y += row;
+            s.slide(base + 9, columns);
             s.y += ref(6);
             int cx = s.colors(base, s.left, row);
             swatches[zone] = {cx + ref(12), s.y + ref(2), cx + ref(44), s.y + ref(34)};
@@ -2041,7 +2050,7 @@ private:
     static bool positional(int id) {
         return (id >= pl1Id && id <= inputId) || id == voltageOffsetId || id == gpuTargetId || id == switchMsId ||
                id == thresholdId || id == coolerFanId || id == coolerPumpId ||
-               (id >= zoneBaseId && id < zoneBaseId + 48 && (id - zoneBaseId) % 16 == 4);
+               (id >= zoneBaseId && id < zoneBaseId + 48 && ((id - zoneBaseId) % 16 == 4 || (id - zoneBaseId) % 16 == 9));
     }
     // A lighting zone's R, G and B boxes. Unless strict, an invalid box keeps its last valid value.
     COLORREF color(int base, bool strict = true) const {
@@ -2103,6 +2112,7 @@ private:
         if (id >= pl1Id && id <= dbId) return std::to_wstring(v) + L" W";
         if (id == switchMsId) return std::to_wstring(v * 100) + L" ms";
         if (id == voltageOffsetId) return std::to_wstring(-v) + L" mV"; // The position is millivolts below stock.
+        if (id >= zoneBaseId && id < zoneBaseId + 48 && (id - zoneBaseId) % 16 == 9) return std::to_wstring(v);
         if ((id >= zoneBaseId && id < zoneBaseId + 48) || id == coolerFanId || id == coolerPumpId)
             return std::to_wstring(v) + L" %";
         return std::to_wstring(v);
@@ -2521,7 +2531,10 @@ private:
                     const int wire[]{0, 2, 3};
                     auto c = color(base);
                     Zone s{checked(base), GetRValue(c), GetGValue(c), GetBValue(c), number(base + 4)};
-                    eraseEdits(base, base + 4);
+                    auto pick = int(SendMessageW(get(base + 8), CB_GETCURSEL, 0, 0));
+                    if (pick >= 0 && pick < int(effects_[zone].size())) s.effect = effects_[zone][pick];
+                    s.speed = number(base + 9);
+                    eraseEdits(base, base + 9);
                     request(LightingApply{wire[zone], s, field == 6});
                 } else if (field == 7) {
                     COLORREF colors[16]{};
@@ -3077,12 +3090,35 @@ private:
                 int base = zoneBaseId + i * 16;
                 bool available = j.contains("zones") && j["zones"][i].get<bool>() && zones[i].has_value();
                 if (i == 2 && j.contains("logoError")) available = false;
-                for (int n = 0; n <= 7; ++n) enable(base + n, available);
+                for (int n = 0; n <= 9; ++n) enable(base + n, available);
+                // The effects this zone's controller offers, as the controller lists them.
+                if (j.contains("zoneEffects")) {
+                    auto keys = j["zoneEffects"][i].get<std::vector<std::string>>();
+                    if (keys != effects_[i]) {
+                        effects_[i] = keys;
+                        auto box = get(base + 8);
+                        SendMessageW(box, CB_RESETCONTENT, 0, 0);
+                        for (auto& k : keys) {
+                            auto name = w(k == "static" ? std::string("static color") : k);
+                            for (auto& c : name)
+                                if (c == L'_') c = L' ';
+                            if (!name.empty()) name[0] = towupper(name[0]);
+                            SendMessageW(box, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(name.c_str()));
+                        }
+                        edited_.erase(base + 8);
+                    }
+                }
                 if (zones[i]) {
                     auto z = *zones[i];
                     checked(base, z.enabled);
                     setColor(base, RGB(z.r, z.g, z.b));
                     value(base + 4, z.brightness, 0, 100);
+                    if (!edited_.contains(base + 8)) {
+                        auto at = std::find(effects_[i].begin(), effects_[i].end(), z.effect);
+                        SendMessageW(get(base + 8), CB_SETCURSEL,
+                                     at == effects_[i].end() ? 0 : WPARAM(at - effects_[i].begin()), 0);
+                    }
+                    value(base + 9, z.speed, 1, 5);
                 }
             }
             const int seconds[]{0, 10, 30, 60, 120, 300, 600};
@@ -3653,6 +3689,7 @@ private:
     UINT dpi_ = 96, taskbarMessage_ = 0;
     RECT liveTable_{0, -1, 0, -1}, coolerSwatch_{};
     std::array<RECT, 3> swatches_{};
+    std::array<std::vector<std::string>, 3> effects_; // Each zone's effect keys, in its Effect box's order.
     std::wstring coolerStatus_ = L"Disconnected", coolerFirmware_;
     std::array<RECT, 8> infoCells_{};
     std::array<std::wstring, 8> infoText_;

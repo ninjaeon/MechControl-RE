@@ -7,6 +7,7 @@
 #include <wrl/client.h>
 #include <algorithm>
 #include <cmath>
+#include <span>
 #include <winrt/base.h>
 
 namespace mech {
@@ -91,6 +92,68 @@ std::vector<std::vector<uint8_t>> per_key_reports(const Zone& v, bool save) {
     }
     return reports;
 }
+namespace ite {
+namespace {
+struct Effect {
+    const char* key;
+    uint8_t id;
+    bool own_color;    // Every palette slot holds the zone's color; otherwise the rainbow palette.
+    uint8_t direction; // The DIRECTION byte.
+};
+// 048D:6005 light bar: vendor HIDLightbar and UUCC (02, 05, 13, 20, 21), OpenRGB Ionico (0A), TUXEDO 6010 (11).
+constexpr Effect light_bar_effects[]{{"breathing", 0x02, true, 0}, {"color_breathing", 0x13, false, 0},
+                                     {"wave", 0x20, false, 0},     {"rainbow", 0x05, false, 0},
+                                     {"raindrops", 0x0A, false, 0}, {"thinking", 0x21, true, 0},
+                                     {"flash", 0x11, true, 0}};
+// 048D:CE00 revision 0.02 four-zone keyboard: ite8291r2ctl.
+constexpr Effect four_zone_effects[]{{"breathing", 0x02, true, 0}, {"wave", 0x03, false, 1},
+                                     {"rainbow", 0x05, false, 0},   {"flash", 0x12, true, 1},
+                                     {"color_breathing", 0x13, false, 0}};
+constexpr uint32_t rainbow[]{0xFF0000, 0xFF7F00, 0xFFFF00, 0x00FF00, 0x00FFFF, 0x0000FF, 0x8B00FF};
+std::span<const Effect> table(Kind k) {
+    if (k == Kind::light_bar) return light_bar_effects;
+    if (k == Kind::four_zone) return four_zone_effects;
+    return {};
+}
+}
+std::vector<std::string> effects(Kind k) {
+    std::vector<std::string> r{"static"};
+    for (auto& e : table(k)) r.push_back(e.key);
+    return r;
+}
+std::vector<HidReport> reports(Kind k, const Zone& v, bool save, bool color_only) {
+    int percent = std::clamp(v.brightness, 0, 100);
+    if (!v.enabled || !percent) // The zone protocol's keyboard OFF sequence, which TUXEDO also sends.
+        return {{0, 9, 2, 0, 0, 0, 0, 0, 0},
+                {0, 0x12, 0, 3, 0, 0, 0, 0, 0},
+                {0, 8, 5, 0, 0, 0, 0, 0, 0},
+                {0, 8, 1, 0, 0, 0, 0, 0, 0},
+                {0, 0x1A, 0, 0, 0, 0, 0, 0, 1}};
+    // The four-zone keyboard's brightness runs 0-50; the light bar follows the 0-100 it was seen to take.
+    auto b = static_cast<uint8_t>(k == Kind::four_zone ? (percent * 50 + 50) / 100 : percent);
+    uint8_t s = save ? 1 : 0;
+    std::vector<HidReport> r;
+    if (!color_only) r.push_back({0, 0x1A, 0, 1, 4, 0, 0, 0, 1});
+    auto slot = [&](int i, uint32_t c) {
+        r.push_back({0, 0x14, 0, static_cast<uint8_t>(i), static_cast<uint8_t>(c >> 16),
+                     static_cast<uint8_t>(c >> 8), static_cast<uint8_t>(c), 0, s});
+    };
+    uint32_t own = uint32_t(v.r) << 16 | uint32_t(v.g) << 8 | v.b;
+    auto known = table(k);
+    auto effect = std::ranges::find_if(known, [&](auto& e) { return v.effect == e.key; });
+    if (effect == known.end()) { // Static: TUXEDO ite8291_zones_write_state and the light bar's working sequence.
+        for (int i = 1; i <= (k == Kind::four_zone ? 4 : 1); ++i) slot(i, own);
+        r.push_back({0, 8, 2, 1, static_cast<uint8_t>(k == Kind::four_zone ? 3 : 1), b, 8, 0, s});
+        return r;
+    }
+    // The keyboard's rainbow colors its four zones; the others fill the seven palette slots.
+    int slots = k == Kind::four_zone && effect->id == 0x05 ? 4 : 7;
+    for (int i = 0; i < slots; ++i) slot(i + 1, effect->own_color ? own : rainbow[i * 7 / slots]);
+    constexpr uint8_t speeds[]{0x0A, 0x07, 0x05, 0x03, 0x01}; // Speed 1 (slow) to 5 (fast), as ite8291r2ctl and UUCC.
+    r.push_back({0, 8, 2, effect->id, speeds[std::clamp(v.speed, 1, 5) - 1], b, 8, effect->direction, s});
+    return r;
+}
+}
 Lighting::Lighting(EcSession& s, ProfileStore& store, std::function<void(const std::string&)> log, bool hardware,
                    Send send, std::function<void(std::function<void()>)> run_io,
                    std::function<void(const std::vector<EcWrite>&)> batch)
@@ -122,6 +185,7 @@ void Lighting::io(const std::function<void()>& work) {
 bool Lighting::open_device() {
     for (auto& h : handles_) h.reset();
     encoding_ = {0, 1, 2, 3};
+    kind_ = {};
     GUID guid;
     HidD_GetHidGuid(&guid);
     auto devices = SetupDiGetClassDevsW(&guid, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
@@ -132,7 +196,7 @@ bool Lighting::open_device() {
     } cleanup{devices};
     struct Controller {
         std::wstring path;
-        USHORT usage, page;
+        USHORT usage, page, version;
         bool per_key;
     };
     std::vector<Controller> paths;
@@ -177,7 +241,7 @@ bool Lighting::open_device() {
             if (status == HIDP_STATUS_SUCCESS && caps.FeatureReportByteLength == 9) {
                 // The one ITE 8291 the Linux drivers agree takes a color for each key (re/register_reference.md 7.1).
                 bool per_key = id.ProductID == 0xCE00 && id.VersionNumber == 3 && caps.OutputReportByteLength == 65;
-                paths.push_back({path, caps.Usage, caps.UsagePage, per_key});
+                paths.push_back({path, caps.Usage, caps.UsagePage, id.VersionNumber, per_key});
                 probes += per_key ? " -> per-key lighting controller" : " -> lighting controller";
             }
         }
@@ -195,22 +259,31 @@ bool Lighting::open_device() {
     auto kb = std::find_if(paths.begin(), paths.end(), [](auto& p) { return p.usage == 1; });
     auto bar = std::find_if(paths.begin(), paths.end(), [](auto& p) { return p.usage == 2; });
     per_key_ = false;
-    // ITE 8291 keyboards sit at usage page 0xFF12 and take other protocols than the zones. Beside one, the 0xFF03
-    // usage-1 controller (048D:6005 on an Eluktronics MAX-17) is the light bar, and it takes the keyboard zone's
-    // commands. A per-key keyboard there is driven as one; another revision (048D:CE00 0.02 there) is left alone.
+    // ITE 8291 keyboards sit at usage page 0xFF12 and take other protocols than the zones: revision 0.02 has four
+    // zones (048D:CE00 on an Eluktronics MAX-17; TUXEDO ite_8291 and OpenRGB Ionico), the per-key one a color for each
+    // key. Beside one, the 0xFF03 usage-1 controller (048D:6005 there) is the light bar, and it takes the keyboard
+    // zone's commands. A keyboard of neither kind is left alone.
     bool ff12 = std::any_of(paths.begin(), paths.end(), [](auto& p) { return p.page == 0xFF12; });
+    auto four = std::find_if(paths.begin(), paths.end(), [](auto& p) { return p.page == 0xFF12 && p.version == 2; });
     auto lone = std::find_if(paths.begin(), paths.end(), [](auto& p) { return p.page == 0xFF03 && p.usage == 1; });
     if (ff12 && bar == paths.end() && lone != paths.end()) {
         write(2, lone->path);
         encoding_[2] = 0;
+        kind_[2] = ite::Kind::light_bar;
         auto keys = std::find_if(paths.begin(), paths.end(), [](auto& p) { return p.page == 0xFF12 && p.per_key; });
-        if (keys != paths.end()) {
+        if (four != paths.end()) {
+            write(0, four->path);
+            kind_[0] = ite::Kind::four_zone;
+        } else if (keys != paths.end()) {
             write(0, keys->path);
             per_key_ = bool(handles_[0]);
         }
-        log_(per_key_ ? "HID: the 0xFF03 usage-1 controller drives the light bar with keyboard-zone commands"
-                      : "HID: keyboard at usage page 0xFF12 not supported; the 0xFF03 usage-1 controller drives the "
-                        "light bar with keyboard-zone commands");
+        log_(four != paths.end() ? "HID: the 0xFF12 revision 0.02 controller drives the four-zone keyboard; the 0xFF03 "
+                                   "usage-1 controller drives the light bar"
+             : per_key_          ? "HID: the 0xFF12 per-key keyboard and the 0xFF03 usage-1 light bar, which takes "
+                                   "keyboard-zone commands"
+                                 : "HID: keyboard at usage page 0xFF12 not supported; the 0xFF03 usage-1 controller "
+                                   "drives the light bar with keyboard-zone commands");
     } else if (kb != paths.end() || bar != paths.end()) {
         if (kb != paths.end()) {
             write(0, kb->path);
@@ -306,6 +379,9 @@ bool Lighting::available(int z) const {
     if (z == 3 && !session_.validation.lighting()) return false;
     return z >= 0 && z < 4 && (output_ || bool(handles_[z]));
 }
+std::vector<std::string> Lighting::effects(int z) const {
+    return ite::effects(z >= 0 && z < 4 ? kind_[z] : ite::Kind::zones);
+}
 void Lighting::send(int z, const HidReport& report) {
     if (output_) {
         output_(z, report);
@@ -334,6 +410,17 @@ void Lighting::transmit(int z, std::span<const uint8_t> report) {
 }
 void Lighting::zone(int z, const Zone& value, bool flash, bool color_only) {
     if (z != 0 && z != 2 && z != 3) throw std::invalid_argument("Unknown lighting zone");
+    // The four-zone keyboard, and the light bar's effects, take the ITE effect reports. Saving sets their SAVE flags.
+    if (kind_[z] == ite::Kind::four_zone || (kind_[z] == ite::Kind::light_bar && value.effect != "static")) {
+        auto reports = ite::reports(kind_[z], value, flash, color_only);
+        io([&] {
+            for (auto& r : reports) {
+                send(z, r);
+                Sleep(1); // The vendor service pauses 1 ms after each lighting report.
+            }
+        });
+        return;
+    }
     auto v = value;
     v.brightness = std::clamp(v.brightness, 0, 100);
     int e = encoding_[z];

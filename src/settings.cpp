@@ -82,9 +82,12 @@ void from_json(const Json& j, Zone& v) {
     F("g", g);
     F("b", b);
     F("brightness", brightness);
+    F("effect", effect);
+    F("speed", speed);
 }
 void to_json(Json& j, const Zone& v) {
-    j = {{"enabled", v.enabled}, {"r", v.r}, {"g", v.g}, {"b", v.b}, {"brightness", v.brightness}};
+    j = {{"enabled", v.enabled}, {"r", v.r},           {"g", v.g},        {"b", v.b},
+         {"brightness", v.brightness}, {"effect", v.effect}, {"speed", v.speed}};
 }
 static void flat_zone_read(const Json& j, const std::string& prefix, Zone& z) {
     field(j, (prefix + "Enabled").c_str(), z.enabled);
@@ -92,6 +95,8 @@ static void flat_zone_read(const Json& j, const std::string& prefix, Zone& z) {
     field(j, (prefix + "G").c_str(), z.g);
     field(j, (prefix + "B").c_str(), z.b);
     field(j, (prefix + "Brightness").c_str(), z.brightness);
+    field(j, (prefix + "Effect").c_str(), z.effect);
+    field(j, (prefix + "Speed").c_str(), z.speed);
 }
 static void flat_zone_write(Json& j, const std::string& prefix, const Zone& z) {
     j[prefix + "Enabled"] = z.enabled;
@@ -99,6 +104,8 @@ static void flat_zone_write(Json& j, const std::string& prefix, const Zone& z) {
     j[prefix + "G"] = z.g;
     j[prefix + "B"] = z.b;
     j[prefix + "Brightness"] = z.brightness;
+    j[prefix + "Effect"] = z.effect;
+    j[prefix + "Speed"] = z.speed;
 }
 void from_json(const Json& j, LightingSettings& v) {
     object(j);

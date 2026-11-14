@@ -1581,6 +1581,7 @@ ControlResult Controller::run(const PeripheralRead& c) {
         lighting_->sync();
         j["lightingIntent"] = lighting_->intent();
         j["zones"] = {lighting_->available(0), lighting_->available(2), lighting_->available(3)};
+        j["zoneEffects"] = {lighting_->effects(0), lighting_->effects(2), lighting_->effects(3)};
         if (features_.lighting()) try {
                 j["logo"] = lighting_->logo();
             } catch (const std::exception& e) {

@@ -8,6 +8,14 @@ using HidReport = std::array<uint8_t, 9>;
 // What an ITE 8291 per-key keyboard is sent to show one color on every key, or to turn off: 9-byte feature reports,
 // and after each row announcement that row's colors as a 65-byte output report (re/register_reference.md 7.1).
 std::vector<std::vector<uint8_t>> per_key_reports(const config::Zone&, bool save);
+// ITE 8291 controllers that take firmware effects. Effect reports are 00 08 02 EFFECT SPEED BRIGHTNESS 08 DIRECTION
+// SAVE after palette slots 00 14 00 SLOT R G B 00 SAVE (vendor LM_ITE_RGB HID_Set_Effect_Type_08H, OpenRGB Ionico,
+// ite8291r2ctl, TUXEDO ite_8291/ite_8291_lb). zones is the static-only zone protocol of re/register_reference.md 7.
+namespace ite {
+enum class Kind { zones, light_bar, four_zone };
+std::vector<std::string> effects(Kind); // "static" first.
+std::vector<HidReport> reports(Kind, const config::Zone&, bool save, bool color_only);
+}
 class Lighting {
 public:
     using Send = std::function<void(int, const HidReport&)>;
@@ -16,6 +24,7 @@ public:
              std::function<void(const std::vector<EcWrite>&)> batch = {});
     bool open();
     bool available(int) const;
+    std::vector<std::string> effects(int) const; // Zone::effect keys the zone's controller takes; "static" first.
     void zone(int, const config::Zone&, bool flash = false, bool color_only = false);
     void change(int, const config::Zone&, bool flash = false, bool color_only = false);
     config::Zone logo();
@@ -47,6 +56,7 @@ private:
     std::function<void(const std::string&)> log_;
     std::array<Handle, 4> handles_;
     std::array<int, 4> encoding_{0, 1, 2, 3}; // The zone whose HID commands each zone's controller takes.
+    std::array<ite::Kind, 4> kind_{};          // Which protocol each zone's controller takes.
     bool hardware_, sleeping_ = false;
     bool per_key_ = false; // The keyboard's controller is an ITE 8291 that takes a color for each key.
     ULONGLONG resume_at_ = 0;

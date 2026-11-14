@@ -31,6 +31,8 @@ struct Zone {
     bool enabled = false;
     uint8_t r = 0, g = 0, b = 0;
     int brightness = 0;
+    std::string effect = "static"; // One of Lighting::effects() for the zone's controller.
+    int speed = 3;                 // 1 (slow) to 5 (fast); a static color ignores it.
     bool operator==(const Zone&) const = default;
 };
 struct LightingSettings {

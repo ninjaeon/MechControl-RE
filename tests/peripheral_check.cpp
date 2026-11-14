@@ -67,6 +67,32 @@ void lighting(const std::filesystem::path& root) {
                                                             {0, {0, 0x14, 0, 1, 4, 255, 61, 0, 0}},
                                                             {0, {0, 8, 2, 1, 1, 41, 8, 0, 0}}},
           "keyboard ON golden HID reports");
+    using ite::Kind;
+    check(ite::effects(Kind::zones) == std::vector<std::string>{"static"} && ite::effects(Kind::four_zone).size() == 6 &&
+              ite::effects(Kind::light_bar).size() == 8,
+          "effect lists by controller");
+    check(ite::reports(Kind::four_zone, Zone{true, 10, 20, 30, 100}, false, false) ==
+              std::vector<HidReport>{{0, 0x1A, 0, 1, 4, 0, 0, 0, 1},
+                                     {0, 0x14, 0, 1, 10, 20, 30, 0, 0},
+                                     {0, 0x14, 0, 2, 10, 20, 30, 0, 0},
+                                     {0, 0x14, 0, 3, 10, 20, 30, 0, 0},
+                                     {0, 0x14, 0, 4, 10, 20, 30, 0, 0},
+                                     {0, 8, 2, 1, 3, 50, 8, 0, 0}},
+          "four-zone keyboard static colors its four zones at brightness 0-50");
+    auto wave = ite::reports(Kind::light_bar, Zone{true, 1, 2, 3, 40, "wave", 5}, false, true);
+    check(wave.size() == 8 && wave[0] == HidReport{0, 0x14, 0, 1, 0xFF, 0, 0, 0, 0} &&
+              wave[6] == HidReport{0, 0x14, 0, 7, 0x8B, 0, 0xFF, 0, 0} &&
+              wave[7] == HidReport{0, 8, 2, 0x20, 1, 40, 8, 0, 0},
+          "light-bar wave fills the rainbow palette, then effect 20 at the fastest speed");
+    auto breathe = ite::reports(Kind::light_bar, Zone{true, 9, 8, 7, 100, "breathing", 1}, true, true);
+    check(breathe.size() == 8 && breathe[3] == HidReport{0, 0x14, 0, 4, 9, 8, 7, 0, 1} &&
+              breathe[7] == HidReport{0, 8, 2, 2, 0x0A, 100, 8, 0, 1},
+          "saved light-bar breathing repeats its color and sets SAVE");
+    auto rainbow = ite::reports(Kind::four_zone, Zone{true, 0, 0, 0, 50, "rainbow", 3}, false, true);
+    check(rainbow.size() == 5 && rainbow[4] == HidReport{0, 8, 2, 5, 5, 25, 8, 0, 0},
+          "keyboard rainbow colors its four zone slots");
+    check(ite::reports(Kind::four_zone, Zone{}, false, false).front() == HidReport{0, 9, 2, 0, 0, 0, 0, 0, 0},
+          "four-zone keyboard OFF");
     reports.clear();
     state->writes.clear();
     owner.change(3, Zone{true, 255, 128, 0, 75});
