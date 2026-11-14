@@ -46,6 +46,7 @@ private:
     config::ProfileStore& store_;
     std::function<void(const std::string&)> log_;
     std::array<Handle, 4> handles_;
+    std::array<int, 4> encoding_{0, 1, 2, 3}; // The zone whose HID commands each zone's controller takes.
     bool hardware_, sleeping_ = false;
     bool per_key_ = false; // The keyboard's controller is an ITE 8291 that takes a color for each key.
     ULONGLONG resume_at_ = 0;

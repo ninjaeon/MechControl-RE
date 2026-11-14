@@ -121,6 +121,7 @@ void Lighting::io(const std::function<void()>& work) {
 }
 bool Lighting::open_device() {
     for (auto& h : handles_) h.reset();
+    encoding_ = {0, 1, 2, 3};
     GUID guid;
     HidD_GetHidGuid(&guid);
     auto devices = SetupDiGetClassDevsW(&guid, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
@@ -131,7 +132,7 @@ bool Lighting::open_device() {
     } cleanup{devices};
     struct Controller {
         std::wstring path;
-        USHORT usage;
+        USHORT usage, page;
         bool per_key;
     };
     std::vector<Controller> paths;
@@ -176,7 +177,7 @@ bool Lighting::open_device() {
             if (status == HIDP_STATUS_SUCCESS && caps.FeatureReportByteLength == 9) {
                 // The one ITE 8291 the Linux drivers agree takes a color for each key (re/register_reference.md 7.1).
                 bool per_key = id.ProductID == 0xCE00 && id.VersionNumber == 3 && caps.OutputReportByteLength == 65;
-                paths.push_back({path, caps.Usage, per_key});
+                paths.push_back({path, caps.Usage, caps.UsagePage, per_key});
                 probes += per_key ? " -> per-key lighting controller" : " -> lighting controller";
             }
         }
@@ -194,7 +195,23 @@ bool Lighting::open_device() {
     auto kb = std::find_if(paths.begin(), paths.end(), [](auto& p) { return p.usage == 1; });
     auto bar = std::find_if(paths.begin(), paths.end(), [](auto& p) { return p.usage == 2; });
     per_key_ = false;
-    if (kb != paths.end() || bar != paths.end()) {
+    // ITE 8291 keyboards sit at usage page 0xFF12 and take other protocols than the zones. Beside one, the 0xFF03
+    // usage-1 controller (048D:6005 on an Eluktronics MAX-17) is the light bar, and it takes the keyboard zone's
+    // commands. A per-key keyboard there is driven as one; another revision (048D:CE00 0.02 there) is left alone.
+    bool ff12 = std::any_of(paths.begin(), paths.end(), [](auto& p) { return p.page == 0xFF12; });
+    auto lone = std::find_if(paths.begin(), paths.end(), [](auto& p) { return p.page == 0xFF03 && p.usage == 1; });
+    if (ff12 && bar == paths.end() && lone != paths.end()) {
+        write(2, lone->path);
+        encoding_[2] = 0;
+        auto keys = std::find_if(paths.begin(), paths.end(), [](auto& p) { return p.page == 0xFF12 && p.per_key; });
+        if (keys != paths.end()) {
+            write(0, keys->path);
+            per_key_ = bool(handles_[0]);
+        }
+        log_(per_key_ ? "HID: the 0xFF03 usage-1 controller drives the light bar with keyboard-zone commands"
+                      : "HID: keyboard at usage page 0xFF12 not supported; the 0xFF03 usage-1 controller drives the "
+                        "light bar with keyboard-zone commands");
+    } else if (kb != paths.end() || bar != paths.end()) {
         if (kb != paths.end()) {
             write(0, kb->path);
             per_key_ = kb->per_key && handles_[0];
@@ -319,11 +336,12 @@ void Lighting::zone(int z, const Zone& value, bool flash, bool color_only) {
     if (z != 0 && z != 2 && z != 3) throw std::invalid_argument("Unknown lighting zone");
     auto v = value;
     v.brightness = std::clamp(v.brightness, 0, 100);
-    uint8_t zone = static_cast<uint8_t>(z),
-            mask = z == 0   ? 2
-                   : z == 2 ? 0x22
+    int e = encoding_[z];
+    uint8_t zone = static_cast<uint8_t>(e),
+            mask = e == 0   ? 2
+                   : e == 2 ? 0x22
                             : 0x23,
-            speed = z == 0 ? 8 : 1, b = static_cast<uint8_t>(v.brightness);
+            speed = e == 0 ? 8 : 1, b = static_cast<uint8_t>(v.brightness);
     if (z == 0 && keyboard_on_ec()) return write_ec_keyboard(v);
     if (z == 2 && bar_on_ec()) return write_ec_bar(v);
     if (z == 0 && per_key_)
@@ -333,13 +351,13 @@ void Lighting::zone(int z, const Zone& value, bool flash, bool color_only) {
     io([&] {
         if (flash) {
             if (z == 3) throw std::invalid_argument("Logo persists through EC, not HID flash");
-            if (z == 0) send(z, {0, 0x14, zone, 9, v.r, v.g, v.b, 0, 0});
-            send(z, {0, 0x1A, static_cast<uint8_t>(z == 2 ? 0 : z), 1, 4, 0, 0, 0, 1});
+            if (e == 0) send(z, {0, 0x14, zone, 9, v.r, v.g, v.b, 0, 0});
+            send(z, {0, 0x1A, static_cast<uint8_t>(e == 2 ? 0 : e), 1, 4, 0, 0, 0, 1});
             send(z, {0, 0x14, zone, 1, v.r, v.g, v.b, 0, 1});
             send(z, {0, 8, mask, 1, 1, b, speed, 0, 1});
             if (!v.enabled) send(z, {0, 0x1A, zone, 0, 0, 0, 0, 0, 1});
         } else if (!v.enabled || !b) {
-            if (z == 0) send(z, {0, 9, 2, 0, 0, 0, 0, 0, 0});
+            if (e == 0) send(z, {0, 9, 2, 0, 0, 0, 0, 0, 0});
             send(z, {0, 0x12, 0, 3, 0, 0, 0, 0, 0});
             send(z, {0, 8, 5, 0, 0, 0, 0, 0, 0});
             send(z, {0, 8, 1, zone, 0, 0, 0, 0, 0});
