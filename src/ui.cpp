@@ -497,6 +497,25 @@ private:
         }
         if (message >= WM_CTLCOLORMSGBOX && message <= WM_CTLCOLORSTATIC)
             return app->colors(message, reinterpret_cast<HDC>(wp), reinterpret_cast<HWND>(lp));
+        // A lighting zone's swatch opens its color dialog, like its Pick Color button, while the zone is available.
+        if (window == app->pages_[4].window &&
+            (message == WM_LBUTTONDOWN || (message == WM_SETCURSOR && LOWORD(lp) == HTCLIENT))) {
+            POINT point{GET_X_LPARAM(lp), GET_Y_LPARAM(lp)};
+            if (message == WM_SETCURSOR) {
+                GetCursorPos(&point);
+                ScreenToClient(window, &point);
+            }
+            for (int zone = 0; zone < 3; ++zone) {
+                int pick = zoneBaseId + zone * 16 + 7;
+                if (!PtInRect(&app->swatches_[zone], point) || !IsWindowEnabled(app->get(pick))) continue;
+                if (message == WM_SETCURSOR) {
+                    SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                    return TRUE;
+                }
+                app->command(pick, BN_CLICKED);
+                return 0;
+            }
+        }
         return DefSubclassProc(window, message, wp, lp);
     }
     static LRESULT CALLBACK focusProcedure(HWND window, UINT message, WPARAM wp, LPARAM lp, UINT_PTR, DWORD_PTR data) {
@@ -2544,18 +2563,20 @@ private:
                     eraseEdits(base, base + 9);
                     request(LightingApply{wire[zone], s, field == 6});
                 } else if (field == 7) {
-                    COLORREF colors[16]{};
                     CHOOSECOLORW choice{sizeof choice};
                     choice.hwndOwner = window_;
                     choice.rgbResult = color(base, false);
-                    choice.lpCustColors = colors;
+                    choice.lpCustColors = customColors_.data();
                     choice.Flags = CC_FULLOPEN | CC_RGBINIT;
                     if (ChooseColorW(&choice)) {
                         eraseEdits(base + 1, base + 3);
                         updating_ = true;
                         setColor(base, choice.rgbResult);
                         updating_ = false;
-                        for (int n = 1; n <= 3; ++n) edited_.insert(base + n);
+                        // A picked color is meant to be seen: the zone turns on and applies it.
+                        SendMessageW(get(base), BM_SETCHECK, BST_CHECKED, 0);
+                        command(base + 5, BN_CLICKED);
+                        return;
                     }
                 } else
                     edited_.insert(id);
@@ -3697,6 +3718,12 @@ private:
     RECT liveTable_{0, -1, 0, -1}, coolerSwatch_{};
     std::array<RECT, 3> swatches_{};
     std::array<std::vector<std::string>, 3> effects_; // Each zone's effect keys, in its Effect box's order.
+    // The color dialog's custom colors: twelve hues and four whites and pastels to start with, then whatever the user
+    // adds, kept while the app runs.
+    std::array<COLORREF, 16> customColors_{
+        RGB(255, 0, 0),   RGB(255, 127, 0), RGB(255, 255, 0), RGB(127, 255, 0),   RGB(0, 255, 0),     RGB(0, 255, 127),
+        RGB(0, 255, 255), RGB(0, 127, 255), RGB(0, 0, 255),   RGB(127, 0, 255),   RGB(255, 0, 255),   RGB(255, 0, 127),
+        RGB(255, 255, 255), RGB(255, 200, 140), RGB(255, 105, 180), RGB(64, 224, 208)};
     std::wstring coolerStatus_ = L"Disconnected", coolerFirmware_;
     std::array<RECT, 8> infoCells_{};
     std::array<std::wstring, 8> infoText_;
